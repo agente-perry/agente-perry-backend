@@ -45,6 +45,7 @@ class ChatResponse(BaseModel):
     query: str
     cypher: str
     results: list[dict]
+    graph_records: list[dict] = []
     narrative: str
     success: bool
     retries: int

@@ -182,6 +182,25 @@ def get_graph():
     return _graph
 
 
+def _enrich_graph(records: list[dict]) -> list[dict]:
+    """If results have company RUCs but no entity RUCs, run companion query to get edges."""
+    rucs = list({str(r["c.ruc"]) for r in records if r.get("c.ruc")})
+    if not rucs:
+        return []
+    has_entities = any(r.get("e.ruc") for r in records)
+    if has_entities:
+        return []
+    cypher = (
+        "MATCH (c:Company)-[:WON]->(ct:Contract)-[:AWARDED_BY]->(e:PublicEntity) "
+        "WHERE c.ruc IN $rucs "
+        "RETURN c.ruc AS `c.ruc`, c.name AS `c.name`, "
+        "e.ruc AS `e.ruc`, e.name AS `e.name`, count(ct) AS contratos "
+        "ORDER BY contratos DESC LIMIT 40"
+    )
+    result = execute_cypher(cypher, {"rucs": rucs})
+    return result.get("records", []) if result.get("success") else []
+
+
 def run_query(query: str, history: list[dict] | None = None) -> dict:
     graph = get_graph()
     initial_state: AgentState = {
@@ -195,10 +214,13 @@ def run_query(query: str, history: list[dict] | None = None) -> dict:
         "success": False,
     }
     final_state = graph.invoke(initial_state)
+    results = final_state["raw_results"]
+    graph_records = results + _enrich_graph(results)
     return {
         "query": final_state["query"],
         "cypher": final_state["cypher"],
-        "results": final_state["raw_results"],
+        "results": results,
+        "graph_records": graph_records,
         "narrative": final_state["narrative"],
         "success": final_state["success"],
         "retries": final_state.get("retries", 0),
