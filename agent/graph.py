@@ -183,22 +183,73 @@ def get_graph():
 
 
 def _enrich_graph(records: list[dict]) -> list[dict]:
-    """If results have company RUCs but no entity RUCs, run companion query to get edges."""
+    """Enrich graph: fetch entity edges, person representatives, and company-company connections."""
     rucs = list({str(r["c.ruc"]) for r in records if r.get("c.ruc")})
     if not rucs:
         return []
+
+    all_enriched: list[dict] = []
     has_entities = any(r.get("e.ruc") for r in records)
-    if has_entities:
-        return []
-    cypher = (
-        "MATCH (c:Company)-[:WON]->(ct:Contract)-[:AWARDED_BY]->(e:PublicEntity) "
-        "WHERE c.ruc IN $rucs "
+
+    # Company properties for info panel (always)
+    r_props = execute_cypher(
+        "MATCH (c:Company) WHERE c.ruc IN $rucs "
         "RETURN c.ruc AS `c.ruc`, c.name AS `c.name`, "
-        "e.ruc AS `e.ruc`, e.name AS `e.name`, count(ct) AS contratos "
-        "ORDER BY contratos DESC LIMIT 40"
+        "c.risk_score_v2 AS `c.risk_score_v2`, "
+        "c.max_trabajadores AS `c.max_trabajadores`, "
+        "c.deuda_coactiva AS `c.deuda_coactiva`, "
+        "c.total_contracts AS `c.total_contracts`, "
+        "c.total_won_pen AS `c.total_won_pen`, "
+        "c.condicion AS `c.condicion`, c.estado AS `c.estado`",
+        {"rucs": rucs},
     )
-    result = execute_cypher(cypher, {"rucs": rucs})
-    return result.get("records", []) if result.get("success") else []
+    if r_props.get("success"):
+        all_enriched.extend(r_props["records"])
+
+    # Company → PublicEntity (only if main query had no entity data)
+    if not has_entities:
+        r_entity = execute_cypher(
+            "MATCH (c:Company)-[:WON]->(ct:Contract)-[:AWARDED_BY]->(e:PublicEntity) "
+            "WHERE c.ruc IN $rucs "
+            "RETURN c.ruc AS `c.ruc`, c.name AS `c.name`, "
+            "e.ruc AS `e.ruc`, e.name AS `e.name`, e.region AS `e.region`, "
+            "count(ct) AS contratos ORDER BY contratos DESC LIMIT 40",
+            {"rucs": rucs},
+        )
+        if r_entity.get("success"):
+            all_enriched.extend(r_entity["records"])
+
+    # Person → Company (representantes legales)
+    r_repr = execute_cypher(
+        "MATCH (p:Person)-[:REPRESENTS]->(c:Company) WHERE c.ruc IN $rucs "
+        "RETURN p.doc_id AS `p.doc_id`, p.name AS `p.name`, "
+        "c.ruc AS `c.ruc`, c.name AS `c.name` LIMIT 30",
+        {"rucs": rucs},
+    )
+    if r_repr.get("success"):
+        all_enriched.extend(r_repr["records"])
+
+    # Company ↔ Company via shared representative
+    r_same_repr = execute_cypher(
+        "MATCH (a:Company)-[:SAME_REPR_AS]->(b:Company) WHERE a.ruc IN $rucs "
+        "RETURN a.ruc AS `c.ruc`, a.name AS `c.name`, "
+        "b.ruc AS `c2.ruc`, b.name AS `c2.name`, 'SAME_REPR' AS `c.relation` LIMIT 20",
+        {"rucs": rucs},
+    )
+    if r_same_repr.get("success"):
+        all_enriched.extend(r_same_repr["records"])
+
+    # Company ↔ Company via shared address
+    r_same_addr = execute_cypher(
+        "MATCH (a:Company)-[:SAME_ADDRESS_AS]->(b:Company) WHERE a.ruc IN $rucs "
+        "RETURN a.ruc AS `c.ruc`, a.name AS `c.name`, "
+        "b.ruc AS `c2.ruc`, b.name AS `c2.name`, 'SAME_ADDR' AS `c.relation` LIMIT 20",
+        {"rucs": rucs},
+    )
+    if r_same_addr.get("success"):
+        all_enriched.extend(r_same_addr["records"])
+
+    return all_enriched
 
 
 def run_query(query: str, history: list[dict] | None = None) -> dict:

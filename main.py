@@ -56,6 +56,18 @@ def health():
     return {"status": "ok", "agent": "perry"}
 
 
+class EnrichRequest(BaseModel):
+    rucs: list[str]
+
+@app.post("/graph-enrich")
+def graph_enrich(req: EnrichRequest):
+    if not req.rucs:
+        return {"records": []}
+    from agent.graph import _enrich_graph
+    fake = [{"c.ruc": ruc} for ruc in req.rucs]
+    return {"records": _enrich_graph(fake)}
+
+
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     if not req.query.strip():
